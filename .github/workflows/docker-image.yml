@@ -21,4 +21,6 @@ jobs:
         uses: docker/build-push-action@v4
         with:
           push: true
-          tags: shuangrain/syno-helper:$(date +%s) , shuangrain/syno-helper:latest
+          tags: |
+            ${{ secrets.DOCKERHUB_USERNAME }}/syno-helper:${{ steps.vars.outputs.tag }}
+            ${{ secrets.DOCKERHUB_USERNAME }}/syno-helper:latest

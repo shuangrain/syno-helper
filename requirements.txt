@@ -1,2 +1,0 @@
-synology-api==0.5.1
-PyOTP==2.8.0

@@ -2,6 +2,8 @@
 
 syno-helper 是一個用於監聽 ACME JSON 檔案後自動將憑證上傳至 Synology NAS 的工具。
 
+本專案使用 [uv](https://docs.astral.sh/uv/) 進行 Python 套件與專案管理。
+
 ## 使用方式
 
 首先設定以下環境變數：
@@ -31,10 +33,14 @@ docker run --rm \
   your-image:latest
 ```
 
-### 直接執行
+### 直接執行 (使用 uv)
 
 ```bash
-python src/main.py
+# 安裝依賴並執行
+uv run syno-helper
+
+# 或透過 python 腳本執行
+uv run python src/main.py
 ```
 
 程式會定期檢查 ACME JSON 檔案，一旦有更新就重新匯出憑證並上傳至 Synology。
@@ -44,8 +50,11 @@ python src/main.py
 ```mermaid
 graph TD
     A[專案根目錄] --> B(Dockerfile)
-    A --> C(requirements.txt)
-    A --> D(README.md)
-    A --> E[src/]
-    E --> F(main.py)
+    A --> C(pyproject.toml)
+    A --> D(uv.lock)
+    A --> E(README.md)
+    A --> F[src/]
+    F --> G[syno_helper/]
+    G --> H(main.py)
+    F --> I(main.py)
 ```

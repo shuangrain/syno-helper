@@ -6,8 +6,11 @@ import re
 import signal
 import sys
 import time
+from typing import Any
 
 import pyotp
+import requests
+from cryptography.hazmat.primitives import serialization
 from synology_api.core_certificate import Certificate
 
 SYNO_HELPER_HOST = os.environ["SYNO_HELPER_HOST"]
@@ -39,12 +42,26 @@ class GracefulKiller:
         self.kill_now = True
 
 
+def normalize_key_pem(key_str: str) -> str:
+    """將私鑰轉換為 Synology DSM 最相容的 Traditional OpenSSL 格式 (PKCS#1 / SEC1)"""
+    try:
+        key = serialization.load_pem_private_key(key_str.encode("utf-8"), password=None)
+        return key.private_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PrivateFormat.TraditionalOpenSSL,
+            encryption_algorithm=serialization.NoEncryption(),
+        ).decode("utf-8")
+    except Exception as e:
+        logger.warning("could not convert key to traditional format (%s), keeping original", e)
+        return key_str
+
+
 def gen_cert_from_acme(acme_path: str, resolver: str, domain: str) -> tuple[str, str, str | None]:
     logger.info("exporting certificates from %r", acme_path)
     with open(acme_path) as f:
         content = json.loads(f.read())
     if not content:
-        sys.exit(f"failed to not found {acme_path}")
+        sys.exit(f"failed to read {acme_path}")
 
     logger.info("find resolver from %r", resolver)
     serv_key = os.path.join(os.getcwd(), "server.key")
@@ -56,6 +73,9 @@ def gen_cert_from_acme(acme_path: str, resolver: str, domain: str) -> tuple[str,
         if cert["domain"]["main"] == domain:
             cert_raw = base64.b64decode(cert["certificate"]).decode("utf-8")
             key_raw = base64.b64decode(cert["key"]).decode("utf-8")
+
+            # 將私鑰轉換為 Traditional OpenSSL 格式
+            key_pem = normalize_key_pem(key_raw)
 
             # 拆分 Domain Certificate 與 Intermediate Certificates
             cert_blocks = re.findall(
@@ -76,7 +96,7 @@ def gen_cert_from_acme(acme_path: str, resolver: str, domain: str) -> tuple[str,
                     ff.write(cert_raw)
 
             with open(serv_key, "w") as ff:
-                ff.write(key_raw)
+                ff.write(key_pem)
             break
 
     ca_cert = inter_cert if has_inter else None
@@ -119,6 +139,73 @@ def login_cert_api() -> Certificate:
     )
 
 
+def upload_cert_to_synology(
+    cert_api: Certificate,
+    serv_key: str,
+    ser_cert: str,
+    ca_cert: str | None = None,
+    cert_id: str | None = None,
+    desc: str | None = None,
+) -> tuple[int, dict[str, Any]]:
+    """比照 acme.sh 實作更健壯的 Synology DSM 憑證上傳請求"""
+    api_name = "SYNO.Core.Certificate"
+    info = cert_api.session.app_api_list[api_name]
+    api_path = info["path"]
+    min_version = info["minVersion"]
+
+    # 取得帶有認證 Cookies 的 requests.Session
+    session = getattr(cert_api.session, "_requests_session", None) or requests.Session()
+    syno_token = getattr(cert_api.session, "_syno_token", None)
+
+    # 構建 URL：同時帶入 _sid 與 SynoToken (滿足 DSM 7 CSRF 防護)
+    url = f"{cert_api.base_url}{api_path}?api={api_name}&version={min_version}&method=import&_sid={cert_api._sid}"
+    if syno_token:
+        url += f"&SynoToken={syno_token}"
+
+    data_payload: dict[str, str] = {
+        "id": cert_id or "",
+        "desc": desc or "",
+    }
+    if cert_id:
+        data_payload["as_default"] = "true"
+
+    headers = {}
+    if syno_token:
+        headers["X-SYNO-TOKEN"] = syno_token
+
+    # 檔案名稱使用 basename，避免路徑中的斜線觸發 Synology upload_err 檢驗錯誤
+    f_key = open(serv_key, "rb")
+    f_cert = open(ser_cert, "rb")
+    f_ca = None
+
+    try:
+        files: dict[str, Any] = {
+            "key": (os.path.basename(serv_key), f_key, "application/octet-stream"),
+            "cert": (os.path.basename(ser_cert), f_cert, "application/octet-stream"),
+        }
+        if ca_cert and os.path.exists(ca_cert):
+            f_ca = open(ca_cert, "rb")
+            files["inter_cert"] = (os.path.basename(ca_cert), f_ca, "application/octet-stream")
+
+        r = session.post(
+            url,
+            files=files,
+            data=data_payload,
+            headers=headers,
+            verify=cert_api.session.verify_cert_enabled(),
+        )
+        try:
+            res_json = r.json()
+        except Exception:
+            res_json = {"raw_text": r.text}
+        return r.status_code, res_json
+    finally:
+        f_key.close()
+        f_cert.close()
+        if f_ca:
+            f_ca.close()
+
+
 def renew_cert():
     serv_key, ser_cert, ca_cert = gen_cert_from_acme(
         SYNO_HELPER_ACME_PATH, SYNO_HELPER_ACME_RESOLVER, SYNO_HELPER_ACME_CERT_DOMAIN
@@ -128,15 +215,25 @@ def renew_cert():
     cert_id = get_exists_cert_id(cert_api, SYNO_HELPER_CERT_DESC)
     target_desc = SYNO_HELPER_CERT_DESC or "default"
 
-    result = cert_api.upload_cert(
+    status_code, result = upload_cert_to_synology(
+        cert_api=cert_api,
         serv_key=serv_key,
         ser_cert=ser_cert,
         ca_cert=ca_cert,
         cert_id=cert_id,
         desc=target_desc,
-        set_as_default=True,
     )
-    logger.info("updating result: %r", result)
+    logger.info("updating result: (%r, %r)", status_code, result)
+
+    # 若上傳成功且原本為新憑證，將其設定為預設憑證
+    if result.get("success"):
+        new_cert_id = cert_id or get_exists_cert_id(cert_api, target_desc)
+        if new_cert_id:
+            try:
+                set_res = cert_api.set_default_cert(new_cert_id)
+                logger.info("set default cert result: %r", set_res)
+            except Exception as e:
+                logger.warning("failed to set default cert: %s", e)
 
     cert_api.logout()
     if os.path.exists(serv_key):

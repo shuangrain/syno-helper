@@ -25,4 +25,4 @@ COPY --from=builder /app/src /app/src
 
 ENV PYTHONPATH="/site-packages:/app/src"
 
-ENTRYPOINT ["/usr/bin/python3", "-m", "syno_helper.main"]
+ENTRYPOINT ["/usr/bin/python3", "-m", "syno_helper"]

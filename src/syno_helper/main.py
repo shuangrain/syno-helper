@@ -2,6 +2,7 @@ import base64
 import json
 import logging
 import os
+import re
 import signal
 import sys
 import time
@@ -38,9 +39,8 @@ class GracefulKiller:
         self.kill_now = True
 
 
-def gen_cert_from_acme(acme_path: str, resolver: str, domain: str) -> tuple[str, str]:
+def gen_cert_from_acme(acme_path: str, resolver: str, domain: str) -> tuple[str, str, str | None]:
     logger.info("exporting certificates from %r", acme_path)
-    content: dict
     with open(acme_path) as f:
         content = json.loads(f.read())
     if not content:
@@ -49,21 +49,44 @@ def gen_cert_from_acme(acme_path: str, resolver: str, domain: str) -> tuple[str,
     logger.info("find resolver from %r", resolver)
     serv_key = os.path.join(os.getcwd(), "server.key")
     ser_cert = os.path.join(os.getcwd(), "server.crt")
+    inter_cert = os.path.join(os.getcwd(), "intermediate.crt")
+    has_inter = False
+
     for cert in content[resolver]["Certificates"]:
         if cert["domain"]["main"] == domain:
-            with open(ser_cert, "w") as ff:
-                ff.write(base64.b64decode(cert["certificate"]).decode("utf-8"))
+            cert_raw = base64.b64decode(cert["certificate"]).decode("utf-8")
+            key_raw = base64.b64decode(cert["key"]).decode("utf-8")
+
+            # 拆分 Domain Certificate 與 Intermediate Certificates
+            cert_blocks = re.findall(
+                r"-----BEGIN CERTIFICATE-----.*?-----END CERTIFICATE-----",
+                cert_raw,
+                re.DOTALL,
+            )
+
+            if cert_blocks:
+                with open(ser_cert, "w") as ff:
+                    ff.write(cert_blocks[0] + "\n")
+                if len(cert_blocks) > 1:
+                    with open(inter_cert, "w") as ff:
+                        ff.write("\n".join(cert_blocks[1:]) + "\n")
+                    has_inter = True
+            else:
+                with open(ser_cert, "w") as ff:
+                    ff.write(cert_raw)
+
             with open(serv_key, "w") as ff:
-                ff.write(base64.b64decode(cert["key"]).decode("utf-8"))
+                ff.write(key_raw)
             break
 
-    logger.info("generating key: %r crt: %r", serv_key, ser_cert)
-    return serv_key, ser_cert
+    ca_cert = inter_cert if has_inter else None
+    logger.info("generating key: %r crt: %r ca_cert: %r", serv_key, ser_cert, ca_cert)
+    return serv_key, ser_cert, ca_cert
 
 
-def get_exists_cert_id(cert_api: Certificate, desc: str) -> str:
+def get_exists_cert_id(cert_api: Certificate, desc: str) -> str | None:
     if not desc:
-        logger.warning("skip looking for existing certificates. Because the desc is empty.", desc)
+        logger.warning("skip looking for existing certificates because the desc is empty.")
         return None
 
     result = cert_api.list_cert()
@@ -97,20 +120,31 @@ def login_cert_api() -> Certificate:
 
 
 def renew_cert():
-    serv_key, ser_cert = gen_cert_from_acme(
+    serv_key, ser_cert, ca_cert = gen_cert_from_acme(
         SYNO_HELPER_ACME_PATH, SYNO_HELPER_ACME_RESOLVER, SYNO_HELPER_ACME_CERT_DOMAIN
     )
 
     cert_api = login_cert_api()
     cert_id = get_exists_cert_id(cert_api, SYNO_HELPER_CERT_DESC)
+    target_desc = SYNO_HELPER_CERT_DESC or "default"
+
     result = cert_api.upload_cert(
-        serv_key, ser_cert, cert_id=cert_id, desc=(SYNO_HELPER_CERT_DESC if cert_id else "default")
+        serv_key=serv_key,
+        ser_cert=ser_cert,
+        ca_cert=ca_cert,
+        cert_id=cert_id,
+        desc=target_desc,
+        set_as_default=True,
     )
     logger.info("updating result: %r", result)
 
     cert_api.logout()
-    os.remove(serv_key)
-    os.remove(ser_cert)
+    if os.path.exists(serv_key):
+        os.remove(serv_key)
+    if os.path.exists(ser_cert):
+        os.remove(ser_cert)
+    if ca_cert and os.path.exists(ca_cert):
+        os.remove(ca_cert)
     logger.info("cleaning up environments")
 
 

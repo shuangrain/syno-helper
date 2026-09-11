@@ -19,6 +19,7 @@ SYNO_HELPER_USER = os.environ["SYNO_HELPER_USER"]
 SYNO_HELPER_PWD = os.environ["SYNO_HELPER_PWD"]
 SYNO_HELPER_OTP = os.getenv("SYNO_HELPER_OTP")
 SYNO_HELPER_CERT_DESC = os.getenv("SYNO_HELPER_CERT_DESC", "default")
+SYNO_HELPER_SET_AS_DEFAULT = os.getenv("SYNO_HELPER_SET_AS_DEFAULT", "false").lower() in ("true", "1", "yes")
 SYNO_HELPER_ACME_PATH = os.environ["SYNO_HELPER_ACME_PATH"]
 SYNO_HELPER_ACME_RESOLVER = os.environ["SYNO_HELPER_ACME_RESOLVER"]
 SYNO_HELPER_ACME_CERT_DOMAIN = os.environ["SYNO_HELPER_ACME_CERT_DOMAIN"]
@@ -146,6 +147,7 @@ def upload_cert_to_synology(
     ca_cert: str | None = None,
     cert_id: str | None = None,
     desc: str | None = None,
+    set_as_default: bool = False,
 ) -> tuple[int, dict[str, Any]]:
     """比照 acme.sh 實作更健壯的 Synology DSM 憑證上傳請求"""
     api_name = "SYNO.Core.Certificate"
@@ -166,7 +168,7 @@ def upload_cert_to_synology(
         "id": cert_id or "",
         "desc": desc or "",
     }
-    if cert_id:
+    if set_as_default:
         data_payload["as_default"] = "true"
 
     headers = {}
@@ -222,11 +224,12 @@ def renew_cert():
         ca_cert=ca_cert,
         cert_id=cert_id,
         desc=target_desc,
+        set_as_default=SYNO_HELPER_SET_AS_DEFAULT,
     )
     logger.info("updating result: (%r, %r)", status_code, result)
 
-    # 若上傳成功且原本為新憑證，將其設定為預設憑證
-    if result.get("success"):
+    # 若設定要設為預設憑證且上傳成功，將其設定為預設憑證
+    if SYNO_HELPER_SET_AS_DEFAULT and result.get("success"):
         new_cert_id = cert_id or get_exists_cert_id(cert_api, target_desc)
         if new_cert_id:
             try:

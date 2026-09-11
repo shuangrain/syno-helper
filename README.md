@@ -35,6 +35,7 @@ flowchart TD
 | `SYNO_HELPER_PWD` | **必要** | - | 登入密碼 |
 | `SYNO_HELPER_OTP` | 選填 | - | TOTP URI（若帳號有啟用二步驟驗證時填寫） |
 | `SYNO_HELPER_CERT_DESC` | 選填 | `default` | 憑證說明名稱（用於比對或更新舊憑證） |
+| `SYNO_HELPER_SET_AS_DEFAULT` | 選填 | `false` | 是否將上傳的憑證設為 DSM 預設憑證（`true` / `false`） |
 | `SYNO_HELPER_ACME_PATH` | **必要** | - | 容器內 ACME JSON 檔案路徑（如 `/app/acme.json`） |
 | `SYNO_HELPER_ACME_RESOLVER` | **必要** | - | Traefik 中設定的 ACME resolver 名稱 |
 | `SYNO_HELPER_ACME_CERT_DOMAIN` | **必要** | - | 憑證對應的主網域名稱（如 `example.com`） |
@@ -57,6 +58,7 @@ docker run -d --name syno-helper \
   -e SYNO_HELPER_ACME_RESOLVER=myresolver \
   -e SYNO_HELPER_ACME_CERT_DOMAIN=example.com \
   -e SYNO_HELPER_CERT_DESC=example.com \
+  -e SYNO_HELPER_SET_AS_DEFAULT=false \
   your-image:latest
 ```
 
@@ -79,6 +81,7 @@ services:
       - SYNO_HELPER_ACME_RESOLVER=myresolver
       - SYNO_HELPER_ACME_CERT_DOMAIN=example.com
       - SYNO_HELPER_CERT_DESC=example.com
+      - SYNO_HELPER_SET_AS_DEFAULT=false
 ```
 
 ### 2. 直接執行 (本機開發)
